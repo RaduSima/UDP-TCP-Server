@@ -1,0 +1,75 @@
+Sima Radu
+321 CB
+
+-- README --
+
+	The application protocol is implemented inside the 2 main classes of the application: ServerProtocol and SubscriberProtocol.
+
+
+ServerProtocol
+--------------
+
+	The data fields of this class are:
+- the server port: long server_port;
+- a running_flag: bool_running_flag;
+
+- fields used for UDP and TCP communication:
+	- the socket id for UDP communication: int udp_socket_id;
+	- the socket id for accepting new TCP data fluxes (the one that the application listens on): int tcp_socket_id;
+	- the server address, UDP address and client address: struct sockaddr_in server_address, client_address, udp_address;
+	- the size of the UDP address: unsigned int udp_address_size;
+	- the set of read sockets: fd_set read_fds;
+	- the maximum value from the read sockets set: int fdmax;
+
+- a vector of TCP clients, that stores all the clients that were connected at any point in time while the server was running: vector<TCP_Client *> clients. The clients are represented as pointers to objects of the TCP_Client class, which stores the client's address, it's currently assigned socket id, it's client id and a connected flag. The TCP_Client class is basically the way the server views clients and is not the one that actually runs the subscriber protocol.
+
+- a HashMap of subscriptions, with topics (represented as strings) for keys: unordered_map<string, vector<Subscription *>> subscriptions_map. The subscriptions are represented as pointers to objects of the Subscription class, which stores a TCP client, an SF flag and a vector of stored messages, for the "store and forward" functionality.
+
+	UDP messages are represented through the UDP_MessageBase class (which contains a topic, a type, a type name and the address of the UDP sender) and its children, which are: UDP_MessageINT, UDP_MessageSHORT, UDP_MessageFLOAT and UDP_MessageSTRING. Each of them has a field called "value" (of a different types, according to the type of the child class) which stores the actual PARSED payload of the message.
+
+	The server gets initialised by calling the init method. This opens the UDP and TCP sockets, initialises addresses, listens on the TCP socket and initialises the read sockets set.
+	The running loop of the server starts with the run method. The correct data read socket gets chosen by the select function (I/O multiplexing). The,n one of four methods is called:
+
+	- void handleDataOnSTDIN(): this handles the exit command (the only command from a human to the server) and sets the running flag to false, basically closing the application
+
+	- void handleDataOnUDP(): this handles data from an UDP client. The data is firstly parsed using the parseUDPMessage method, which returns a correct instance of the class UDP_Message. Then, the subscriptions HashMap gets iterated, and the message either gets sent to all connected clients inside the subscription objects, using the sendMessage method (which follows the application protocol of sending messages to TCP clients, which has rules which will be explained at the end), or gets stored for the "store and forward" functionality, using the method storeMessage from the Subscription class.
+
+	- void handleNewTCPConnection(): this opens a new TCP connection. If he is a new client, it opens a new socket for him and adds the client to the clients list. If it is a reconnected client, it updates his socket id and sends the stored messages to him, if he had any subscriptions with the SF flag, using the sendStoredMessages method.
+
+	- void handleDataOnTCPClient(int current_fd): this handles disconnect, subscribe and unsubscribe requests. The clients request gets parsed using the parseClientRequest method, and, if it is valid, it either disconnects the client (removes his socket id from the read set and sets his connected flag to false), subscribes the client (creates a new Subcription object and accordingly adds it to the subscriptions map) or unsubscribes him (removes a Subscription object from the map).
+
+	When the ServerProtocol object gets deleted, all connections are closed and all extra memory allocated by the server is freed, using the destructor from the class.
+
+
+SubscriberProtocol
+--------------
+
+The data fields of this class are:
+- the server port: long server_port;
+- the client id: string client_id;
+- a running_flag: bool_running_flag;
+
+- fields used for TCP communication:
+	- the socket id for TCP communication: int tcp_socket_id;
+	- the server address: struct sockaddr_in serv_addr;
+	- the set of read sockets: fd_set read_fds;
+	- the maximum value from the read sockets set: int fdmax;
+
+	The subscriber gets initialised through the init method. This sets the server address, initialises the read sockets set and connects to the server.
+	The actual loop of the subscriber starts with the run method. Like the server it uses I/O multiplexing to choose to read either from STDIN or from the TCP socket, through the select function. Then, one of 2 methods gets called:
+	
+	- void handleDataOnSTDIN(): this handles the exit, subscribe and unsubscribe commands and accordingly sends a request to the server (or 0 bytes of data, in case of the exit command)
+
+	- void handleDataFromServer(): this receives already parsed data from server (using the char* receiveServerData() method) and either disconnects the client (if 0 bytes were received or prints the message to the console).
+
+	When the SubscriberProtocol object gets deleted, its TCP connection is closed, inside of the class destructor.
+
+
+Main rules of the application protocol
+--------------------------------------------------
+
+1. A received 0 bytes message should be interpreted as a sender disconnection (either the client or the server is disconnecting).
+
+2. After a new connection with a TCP client is enstablished, he will always send his sender ID as his first message to the server.
+
+3. When the server sends a message to a connected TCP client, it will always first send the length of the message payload.
